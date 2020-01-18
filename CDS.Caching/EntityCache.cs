@@ -1,36 +1,40 @@
-﻿using Newtonsoft.Json;
+﻿using CSharpTest.Net.Collections;
+using Newtonsoft.Json;
 using System;
-using System.Collections.Concurrent;
+using System.Collections;
 using System.Collections.Generic;
-using System.Collections.ObjectModel;
 
 namespace CDS.Caching
 {
-    public abstract class EntityCache<TRecord> where TRecord : IRecord
+    public class EntityCache<TRecord> : IEnumerable<KeyValuePair<Guid, TRecord>> where TRecord : IRecord
     {
-        public Dictionary<Guid, TRecord> CachedRecords { get; set; }
+        public List<string> CachedAttributeNames { get; }
 
-        public ConcurrentDictionary<Guid, string> CachedJsons { get; set; }
+        public int Count { get { return CachedRecords.Count; } }
 
-        public ReadOnlyCollection<string> AttributesNames { get; set; }
+        private LurchTable<Guid, TRecord> CachedRecords;
 
         private string _selectAttributes;
 
         private string _entityPluralSchemaName;
 
-        private string _idFieldName;
+        private Func<string, string, string> _recordValidator;
 
-        private HttpConfig _httpConfig;
-
-        public EntityCache(string entityPluralSchemaName, string idFieldName, HttpConfig httpConfig, params string[] attributesToCache)
+        public EntityCache(string entityPluralSchemaName, int capacity, Func<string, string, string> recordValidator, params string[] attributesToCache)
         {
-            _idFieldName = idFieldName;
             _entityPluralSchemaName = entityPluralSchemaName;
-
-            CachedRecords = new Dictionary<Guid, TRecord>();
-            CachedJsons = new ConcurrentDictionary<Guid, string>();
-            AttributesNames = new ReadOnlyCollection<string>(attributesToCache);
+            _recordValidator = recordValidator;
+            CachedRecords = new LurchTable<Guid, TRecord>(capacity);
+            CachedAttributeNames = new List<string>(attributesToCache);
             _selectAttributes = string.Join(",", attributesToCache);
+        }
+
+        public TRecord GetQuickest(Guid recordId)
+        {
+            var record = GetCached(recordId);
+            if (record != null)
+                return record;
+            return GetLatest(recordId);
         }
 
         public TRecord GetCached(Guid recordId)
@@ -40,78 +44,66 @@ namespace CDS.Caching
             return record;
         }
 
-        public TRecord RetrieveLatest(Guid recordId)
+        public TRecord GetLatest(Guid recordId)
         {
-            RetrieveLatestJson(recordId);
-            return GetCached(recordId);
-        }
+            var cached = GetCached(recordId);
+            var latest = ValidateCache(PrepareAction(recordId), cached?.ETag);
 
-        public string GetCachedJson(Guid recordId)
-        {
-            string json;
-            CachedJsons.TryGetValue(recordId, out json);
-            return json;
-        }
-
-        public string RetrieveLatestJson(Guid recordId)
-        {
-            var cachedRecord = GetCached(recordId);
-            var cachedJson = GetCachedJson(recordId);
-            var cacheState = ValidateCache(PrepareAction(recordId), cachedRecord.ETag);
-            if (string.IsNullOrEmpty(cacheState))
-                return cachedJson;
+            if (string.IsNullOrEmpty(latest))
+                return cached;
             else
             {
-                SyncCacheStores(recordId, cachedRecord.ETag, cacheState);
-                return cacheState;
+                var latestRecord = Deserialize(latest);
+                SyncCacheStores(recordId, cached?.ETag, latestRecord);
+                return latestRecord;
             }
+        }
+
+        private TRecord Deserialize(string json)
+        {
+            return JsonConvert.DeserializeObject<TRecord>(json);
         }
 
         private string PrepareAction(Guid recordId)
         {
             var action = $"{_entityPluralSchemaName}({recordId})";
-            if (AttributesNames.Count > 0)
+            if (CachedAttributeNames.Count > 0)
                 action += $"?select={_selectAttributes}";
             return action;
         }
 
         private string ValidateCache(string action, string eTag)
         {
-            return _httpConfig.GetRecord(action, eTag);
+            return _recordValidator(action, eTag);
         }
 
-        private void SyncCacheStores(Guid recordId, string eTag, string cacheState)
+        private void SyncCacheStores(Guid recordId, string eTag, TRecord record)
         {
             if (string.IsNullOrEmpty(eTag))
-            {
-                AddToJsonCacheStore(recordId, cacheState);
-                AddToModelCacheStore(recordId, cacheState);
-            }
+                AddToModelCacheStore(recordId, record);
             else
-            {
-                UpdateJsonCacheStore(recordId, cacheState);
-                UpdateModelCacheStore(recordId, cacheState);
-            }
+                UpdateModelCacheStore(recordId, record);
         }
 
-        private void AddToJsonCacheStore(Guid recordId, string json)
+        private void AddToModelCacheStore(Guid recordId, TRecord record)
         {
-            CachedJsons.TryAdd(recordId, json);
+            CachedRecords.TryAdd(recordId, record);
         }
 
-        private void AddToModelCacheStore(Guid recordId, string json)
+        private void UpdateModelCacheStore(Guid recordId, TRecord record)
         {
-            CachedRecords.TryAdd(recordId, JsonConvert.DeserializeObject<TRecord>(json));
+            CachedRecords[recordId] = record;
         }
 
-        private void UpdateJsonCacheStore(Guid recordId, string json)
+        // Wrapper over LurchTable Methods
+        public IEnumerator<KeyValuePair<Guid, TRecord>> GetEnumerator()
         {
-            CachedJsons[recordId] = json;
+            return CachedRecords.GetEnumerator();
         }
 
-        private void UpdateModelCacheStore(Guid recordId, string json)
+        IEnumerator IEnumerable.GetEnumerator()
         {
-            CachedRecords[recordId] = JsonConvert.DeserializeObject<TRecord>(json);
+            return CachedRecords.GetEnumerator();
         }
     }
 }

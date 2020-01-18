@@ -4,7 +4,7 @@ using System.Net.Http.Headers;
 
 namespace CDS.Caching
 {
-    public class HttpConfig
+    public class HttpHelper
     {
         public string GetRecord(string action, string eTag)
         {

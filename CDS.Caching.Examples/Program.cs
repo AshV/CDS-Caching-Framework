@@ -3,11 +3,18 @@ using System;
 
 namespace CDS.Caching.Examples
 {
-    class Program
+    internal class Program
     {
-        static void Main(string[] args)
+        private static void Main(string[] args)
         {
             Console.WriteLine("Hello World!");
+
+            var contactCache = new EntityCache<Contact>("contacts", 5, (a, b) => { return ""; });
+
+            contactCache.ForEach(cache =>
+            {
+                Console.WriteLine(cache.Key + " - " + cache.Value.ToString());
+            });
         }
     }
 
@@ -18,13 +25,5 @@ namespace CDS.Caching.Examples
 
         [JsonProperty("@odata.etag")]
         public string ETag { get; set; }
-    }
-
-    public class ContactCache : EntityCache<Contact>
-    {
-        public ContactCache() : base("contact", "contactid", new HttpConfig())
-        {
-
-        }
     }
 }
